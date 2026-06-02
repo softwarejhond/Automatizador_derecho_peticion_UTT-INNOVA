@@ -1,0 +1,4 @@
+2026/01/21-16:49:04.350 327916 Reusing MANIFEST /Applications/XAMPP/xamppfiles/htdocs/automatizadorutt/pup-data/Default/WebStorage/1/IndexedDB/indexeddb.leveldb/MANIFEST-000001
+2026/01/21-16:49:04.350 327916 Recovering log #3
+2026/01/21-16:49:04.351 327916 Reusing old log /Applications/XAMPP/xamppfiles/htdocs/automatizadorutt/pup-data/Default/WebStorage/1/IndexedDB/indexeddb.leveldb/000003.log 
+2026/01/21-16:49:04.360 327916 Manual compaction at level-0 from '\x00\x02\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x03\x00\x00\x00' @ 0 : 0; will stop at (end)
