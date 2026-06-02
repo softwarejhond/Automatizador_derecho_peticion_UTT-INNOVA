@@ -1,0 +1,435 @@
+const fs = require("fs");
+const path = require("path");
+const puppeteer = require("puppeteer");
+
+const PUP_DATA = path.join(__dirname, "pup-data");
+if (!fs.existsSync(PUP_DATA)) fs.mkdirSync(PUP_DATA, { recursive: true });
+
+// Leer usuarios desde JSON
+const archivoUsuarios = path.join(__dirname, "usuarios.json");
+let usuarios = [];
+
+if (fs.existsSync(archivoUsuarios)) {
+    try {
+        usuarios = JSON.parse(fs.readFileSync(archivoUsuarios, "utf-8"));
+    } catch (e) {
+        console.error("Error al leer usuarios.json:", e.message);
+        process.exit(1);
+    }
+}
+
+// Si se pasan parámetros, usar esos; sino usar el primer usuario del JSON
+let cedula, curso, emailBuscar, moodleUser, moodlePass;
+let ejecutarDesdeJSON = false;
+
+if (process.argv[2]) {
+    // Parámetros pasados desde línea de comandos
+    cedula = process.argv[2];
+    curso = process.argv[3];
+    emailBuscar = process.argv[4];
+    moodleUser = process.argv[5];
+    moodlePass = process.argv[6];
+    
+    // Validar que todos los parámetros estén presentes
+    if (!cedula || !curso || !moodleUser || !moodlePass) {
+        console.error("\n❌ ERROR: Parámetros incompletos");
+        console.error("Uso: node capturador.js <cedula> <curso> <email> <usuario> <contraseña>");
+        process.exit(1);
+    }
+} else if (usuarios.length > 0) {
+    // Procesar usuarios del JSON uno por uno
+    ejecutarDesdeJSON = true;
+} else {
+    console.error("\n❌ ERROR: No hay usuarios para procesar");
+    console.error("Crea un archivo usuarios.json o pasa parámetros");
+    process.exit(1);
+}
+
+function obtenerChromePath() {
+    const chromePaths = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium"
+    ];
+    for (const p of chromePaths) if (fs.existsSync(p)) return p;
+    return null;
+}
+
+/* ==========================================================
+   FUNCIÓN UNIVERSAL PARA ENCONTRAR BOTONES POR TEXTO
+   ========================================================== */
+async function findButtonByText(page, textos) {
+    return await page.evaluateHandle((textos) => {
+        textos = textos.map(t => t.toLowerCase().trim());
+
+        const elementos = [
+            ...document.querySelectorAll("a, button, input[type='submit'], input[type='button'], div, span")
+        ];
+
+        return elementos.find(el => {
+            const t = (el.innerText || el.value || "").toLowerCase().trim();
+            return textos.includes(t);
+        }) || null;
+
+    }, textos);
+}
+
+/* ==========================================================
+   BUSCAR Y RESALTAR USUARIO POR EMAIL
+   ========================================================== */
+async function findAndHighlightUser(page, userEmail) {
+    return await page.evaluate((email) => {
+        const elements = document.querySelectorAll("*");
+        let encontrado = false;
+        
+        for (let el of elements) {
+            const text = el.innerText || el.textContent || "";
+            
+            // Buscar el email exacto
+            if (text.includes(email)) {
+                // Resaltar el elemento
+                el.style.backgroundColor = "#FFD700";
+                el.style.border = "3px solid #FF6347";
+                el.style.padding = "10px";
+                el.style.boxShadow = "0 0 10px rgba(255, 0, 0, 0.5)";
+                
+                // Scroll hasta el elemento
+                el.scrollIntoView({ behavior: "smooth", block: "center" });
+                encontrado = true;
+                break;
+            }
+        }
+        
+        return encontrado;
+    }, userEmail);
+}
+
+/* ==========================================================
+   PROCESAR USUARIOS DEL JSON
+   ========================================================== */
+async function procesarUsuariosDelJSON() {
+    console.log(`\n📋 Encontrados ${usuarios.length} usuarios para procesar\n`);
+    
+    for (let i = 0; i < usuarios.length; i++) {
+        const usuario = usuarios[i];
+        const numeroActual = i + 1;
+        
+        console.log(`\n${'='.repeat(60)}`);
+        console.log(`⏳ Usuario ${numeroActual}/${usuarios.length}`);
+        console.log(`${'='.repeat(60)}`);
+        console.log(`👤 Cédula: ${usuario.cedula}`);
+        console.log(`📧 Email: ${usuario.email}`);
+        console.log(`📚 Curso: ${usuario.curso}`);
+        
+        try {
+            // Asignar variables globales para este usuario
+            cedula = usuario.cedula;
+            curso = usuario.curso;
+            emailBuscar = usuario.email;
+            moodleUser = usuario.usuario;
+            moodlePass = usuario.contraseña;
+            
+            // Ejecutar la automatización
+            await ejecutarCapturador();
+        } catch (error) {
+            console.error(`\n❌ Error:`, error.message);
+        }
+        
+        // Pausa entre usuarios
+        if (i < usuarios.length - 1) {
+            console.log("\n⏸ Esperando 3 segundos antes del siguiente usuario...");
+            await new Promise(r => setTimeout(r, 3000));
+        }
+    }
+    
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`✅ Proceso completado`);
+    console.log(`${'='.repeat(60)}\n`);
+}
+
+/* ==========================================================
+   FUNCIÓN PRINCIPAL DE AUTOMATIZACIÓN
+   ========================================================== */
+async function ejecutarCapturador() {
+    const chromePath = obtenerChromePath();
+    const userDataDir = path.join(PUP_DATA, `session_${cedula}_${Date.now()}`);
+    fs.mkdirSync(userDataDir, { recursive: true });
+
+    const browser = await puppeteer.launch({
+        headless: false,
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--window-size=1666,768"
+        ],
+        defaultViewport: { width: 1666, height: 768 },
+        userDataDir,
+        executablePath: chromePath
+    });
+
+    const page = await browser.newPage();
+
+    // LOGIN
+    await page.goto("https://talento-tech.uttalento.co/login/index.php", { waitUntil: "networkidle2" });
+    await page.type("#username", moodleUser);
+    await page.type("#password", moodlePass);
+
+    await Promise.all([
+        page.click("#loginbtn"),
+        page.waitForNavigation({ waitUntil: "networkidle2" })
+    ]);
+
+    // VERIFICAR USUARIO LOGUEADO
+    console.log("\n✅ Login exitoso");
+    
+    // Obtener información del usuario logueado
+    const userInfo = await page.evaluate(() => {
+        // Buscar email o nombre de usuario
+        const elements = document.querySelectorAll("*");
+        let userEmail = null;
+        
+        for (let el of elements) {
+            const text = el.innerText || "";
+            if (text.includes("@") && text.includes(".")) {
+                userEmail = text.match(/[\w\.-]+@[\w\.-]+\.\w+/)?.[0];
+                if (userEmail) break;
+            }
+        }
+        return userEmail || moodleUser;
+    });
+    
+    console.log(`👤 Usuario logueado: ${userInfo}`);
+
+    // ABRIR SIDEBAR IZQUIERDO
+    try {
+        console.log("\n📂 Abriendo barra lateral...");
+        await page.evaluate(() => {
+            // Buscar y hacer click en el botón de toggle del sidebar
+            const toggleBtn = document.querySelector('[data-toggle="drawer"]') ||
+                            document.querySelector('[aria-label*="sidebar"]') ||
+                            document.querySelector('[aria-label*="navegación"]') ||
+                            document.querySelector('button[data-action="toggle-drawer"]');
+            if (toggleBtn) {
+                toggleBtn.click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 1000));
+    } catch (error) {
+        console.log("⚠ No se pudo abrir el sidebar automáticamente:", error.message);
+    }
+
+    // ENTRAR AL CURSO
+    const courseUrl = `https://talento-tech.uttalento.co/course/view.php?id=${curso}`;
+    await page.goto(courseUrl, { waitUntil: "networkidle2" });
+    await new Promise(r => setTimeout(r, 1500));
+
+    // ABRIR ÍNDICE DEL CURSO
+    try {
+        console.log("\n📑 Abriendo índice del curso...");
+        await page.evaluate(() => {
+            // Buscar botón de índice o tabla de contenidos
+            const indexBtn = document.querySelector('[data-toggle="course-toc"]') ||
+                            document.querySelector('button[aria-label*="Índice"]') ||
+                            document.querySelector('button[aria-label*="índice"]') ||
+                            document.querySelector('button[aria-label*="Contents"]') ||
+                            document.querySelector('button[aria-label*="Table of contents"]') ||
+                            document.querySelector('[data-action="toggle-toc"]') ||
+                            document.querySelector('button[data-action*="toc"]');
+            if (indexBtn) {
+                indexBtn.click();
+            }
+        });
+        await new Promise(r => setTimeout(r, 1500));
+    } catch (error) {
+        console.log("⚠ No se pudo abrir el índice:", error.message);
+    }
+
+    // BUSCAR Y RESALTAR AL USUARIO EN EL LISTADO
+    const emailABuscar = emailBuscar || userInfo;
+    console.log(`\n🔍 Buscando usuario ${emailABuscar} en la página...`);
+    const userFound = await findAndHighlightUser(page, emailABuscar);
+    if (userFound) {
+        console.log(`✓ Usuario encontrado y resaltado: ${emailABuscar}`);
+        await new Promise(r => setTimeout(r, 1000));
+    } else {
+        console.log(`⚠ Usuario ${emailABuscar} no encontrado en el listado visual`);
+    }
+
+    // QUIZZES A BUSCAR
+    const quizzesObjetivo = [
+        "Test de Comprensión Teórica",
+        "Reto Práctico"
+    ];
+
+    let quizzesEncontrados = [];
+
+    // DEBUG: Mostrar todos los enlaces encontrados
+    const todosEnlaces = await page.evaluate(() => {
+        return [...document.querySelectorAll("a")]
+            .map(a => a.innerText.trim())
+            .filter(text => text.length > 0 && text.length < 100);
+    });
+    console.log("📋 Enlaces en la página:", todosEnlaces.slice(0, 30));
+
+    for (let titulo of quizzesObjetivo) {
+        console.log(`\n🔍 Buscando: "${titulo}"`);
+        
+        const url = await page.evaluate((titulo) => {
+            const elementos = [...document.querySelectorAll("a")];
+            
+            for (let a of elementos) {
+                const texto = a.innerText.trim();
+                
+                // Búsqueda exacta
+                if (texto === titulo) {
+                    return a.href;
+                }
+                
+                // Búsqueda parcial si contiene todas las palabras clave
+                const palabrasQuiz = titulo.toLowerCase().split(" ");
+                const palabrasTexto = texto.toLowerCase().split(" ");
+                const coincide = palabrasQuiz.every(palabra => 
+                    palabrasTexto.some(p => p.includes(palabra))
+                );
+                
+                if (coincide) {
+                    return a.href;
+                }
+            }
+            
+            return null;
+        }, titulo);
+
+        if (url) {
+            quizzesEncontrados.push({ titulo, url });
+            console.log(`✓ Quiz encontrado: "${titulo}" -> ${url}`);
+        } else {
+            console.log(`✗ Quiz NO encontrado: "${titulo}"`);
+        }
+    }
+
+    console.log(`\n📊 Total de quizzes encontrados: ${quizzesEncontrados.length}\n`);
+
+    if (quizzesEncontrados.length === 0) {
+        console.log("❌ No se encontraron los quizzes requeridos.");
+        console.log("Los quiz buscados son:");
+        quizzesObjetivo.forEach(q => console.log(`  - ${q}`));
+        await browser.close();
+        return;
+    }
+
+    // CARPETA DE CAPTURAS
+    const folder = path.join(__dirname, "capturas", cedula);
+    fs.mkdirSync(folder, { recursive: true });
+
+    // PROCESAR CADA QUIZ EN LA MISMA PÁGINA
+    for (let i = 0; i < quizzesEncontrados.length; i++) {
+        const quiz = quizzesEncontrados[i];
+
+        console.log(`\n📌 Procesando quiz ${i + 1}/${quizzesEncontrados.length}: ${quiz.titulo}`);
+
+        try {
+            await page.goto(quiz.url, { waitUntil: "networkidle2" });
+            await new Promise(r => setTimeout(r, 2000));
+
+            // CAPTURA 1: INICIAL DEL QUIZ
+            const filenameQuiz = path.join(folder, `${cedula}_${quiz.titulo.replace(/\s+/g, "_")}_01_INICIAL.png`);
+            await page.screenshot({ path: filenameQuiz, fullPage: true });
+            console.log("✔ Captura 1 (Inicial) guardada:", filenameQuiz);
+
+            // BUSCAR Y HACER CLIC EN INTENTO/RESULTADO
+            const resultadoBtn = await page.evaluate(() => {
+                const elementos = [...document.querySelectorAll("a, button")];
+                
+                // Palabras clave para buscar el resultado
+                const palabrasResultado = [
+                    "intento", "attempt",
+                    "resultado", "result",
+                    "ver intento", "view attempt",
+                    "calificación", "grade",
+                    "revisión", "review"
+                ];
+                
+                for (let elemento of elementos) {
+                    const texto = (elemento.innerText || elemento.textContent || "").toLowerCase().trim();
+                    if (palabrasResultado.some(palabra => texto.includes(palabra))) {
+                        return { texto, existe: true };
+                    }
+                }
+                return null;
+            });
+
+            if (resultadoBtn && resultadoBtn.existe) {
+                console.log(`➡ Encontrado: ${resultadoBtn.texto}`);
+                
+                // Hacer clic en el elemento del resultado
+                await page.evaluate(() => {
+                    const elementos = [...document.querySelectorAll("a, button")];
+                    const palabrasResultado = [
+                        "intento", "attempt",
+                        "resultado", "result",
+                        "ver intento", "view attempt",
+                        "calificación", "grade",
+                        "revisión", "review"
+                    ];
+                    
+                    for (let elemento of elementos) {
+                        const texto = (elemento.innerText || elemento.textContent || "").toLowerCase().trim();
+                        if (palabrasResultado.some(palabra => texto.includes(palabra))) {
+                            elemento.click();
+                            break;
+                        }
+                    }
+                });
+
+                // Esperar a que cargue el resultado
+                try {
+                    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 10000 });
+                } catch (e) {
+                    console.log("⚠ Timeout en navegación, esperando 2s…");
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+
+                // CAPTURA 2: RESULTADO DEL QUIZ
+                const filenameResultado = path.join(
+                    folder,
+                    `${cedula}_${quiz.titulo.replace(/\s+/g, "_")}_02_RESULTADO.png`
+                );
+                await page.screenshot({ path: filenameResultado, fullPage: true });
+                console.log("✔ Captura 2 (Resultado) guardada:", filenameResultado);
+            } else {
+                console.log("⚠ No se encontró resultado/intento para este quiz.");
+            }
+
+        } catch (error) {
+            console.log(`❌ Error procesando ${quiz.titulo}:`, error.message);
+        }
+
+        // Volver al curso si no es el último quiz
+        if (i < quizzesEncontrados.length - 1) {
+            console.log("↩ Volviendo al curso...");
+            try {
+                await page.goto(courseUrl, { waitUntil: "networkidle2" });
+                await new Promise(r => setTimeout(r, 1500));
+            } catch (error) {
+                console.log("⚠ Error volviendo al curso:", error.message);
+            }
+        }
+    }
+
+    console.log("\n✅ Proceso completado");
+    await browser.close();
+}
+
+// Ejecutar
+(async () => {
+    try {
+        if (ejecutarDesdeJSON) {
+            await procesarUsuariosDelJSON();
+        } else {
+            await ejecutarCapturador();
+        }
+    } catch (error) {
+        console.error("❌ Error fatal:", error);
+        process.exit(1);
+    }
+})();
