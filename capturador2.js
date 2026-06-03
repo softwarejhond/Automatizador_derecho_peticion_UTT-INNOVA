@@ -242,25 +242,134 @@ async function ejecutarCapturador() {
     await page.goto(courseUrl, { waitUntil: "networkidle2" });
     await new Promise(r => setTimeout(r, 1500));
 
-    // ABRIR ÍNDICE DEL CURSO
+    // ABRIR ÍNDICE DEL CURSO (solo si está cerrado)
     try {
-        console.log("\n📑 Abriendo índice del curso...");
-        await page.evaluate(() => {
-            // Buscar botón de índice o tabla de contenidos
-            const indexBtn = document.querySelector('[data-toggle="course-toc"]') ||
-                            document.querySelector('button[aria-label*="Índice"]') ||
-                            document.querySelector('button[aria-label*="índice"]') ||
-                            document.querySelector('button[aria-label*="Contents"]') ||
-                            document.querySelector('button[aria-label*="Table of contents"]') ||
-                            document.querySelector('[data-action="toggle-toc"]') ||
-                            document.querySelector('button[data-action*="toc"]');
-            if (indexBtn) {
-                indexBtn.click();
+        console.log("\n📑 Verificando índice del curso...");
+        
+        const drawerId = "theme_boost-drawers-courseindex";
+        
+        // Comprobar si ya está abierto usando la clase del drawer
+        const abierto = await page.evaluate((id) => {
+            const drawer = document.getElementById(id);
+            return drawer ? drawer.classList.contains("show") : false;
+        }, drawerId);
+
+        if (abierto) {
+            console.log("✅ El índice ya estaba abierto.");
+        } else {
+            // Selectores que priorizan apuntar directamente al icono exacto
+            const selectors = [
+                'button[data-target="theme_boost-drawers-courseindex"] i.fa-list',  // Icono exacto dentro del botón
+                'button[data-target="theme_boost-drawers-courseindex"] i',          // Cualquier icono en el botón
+                'i.fa-list',                                                        // El icono suelto
+                '[data-target="theme_boost-drawers-courseindex"] i',                // Icono general de target
+                '[data-target="theme_boost-drawers-courseindex"]',                  // El botón por data-target
+                '.btn.icon-no-margin[data-target*="courseindex"]',                 // Por clase y target parcial
+                'button[data-original-title*="ndice"] i',                           // Buscando por título aproximado
+                'button[aria-label*="ndice"] i'                                     // Buscando por aria-label aproximado
+            ];
+
+            // Esperar a encontrar uno de los selectores en el DOM
+            let selectorEncontrado = null;
+            for (const sel of selectors) {
+                try {
+                    await page.waitForSelector(sel, { timeout: 1000 });
+                    selectorEncontrado = sel;
+                    break;
+                } catch (e) {
+                    // Seguir probando el resto de selectores
+                }
             }
-        });
-        await new Promise(r => setTimeout(r, 1500));
+
+            if (!selectorEncontrado) {
+                console.log("⚠ No se localizó el icono/botón por selectores normales. Se intentará forzado...");
+            } else {
+                console.log(`✓ Encontrado selector operativo: "${selectorEncontrado}"`);
+            }
+
+            let veredictoAbierto = false;
+            for (let intento = 1; intento <= 3; intento++) {
+                
+                if (selectorEncontrado) {
+                    // 1. Forzar Hover Real sobre el icono
+                    try {
+                        const elem = await page.$(selectorEncontrado);
+                        if (elem) {
+                            await elem.hover();
+                            await new Promise(r => setTimeout(r, 400));
+                        }
+                    } catch (e) {}
+
+                    // 2. Ejecutar Clic físico de Puppeteer en el icono
+                    try {
+                        await page.click(selectorEncontrado);
+                    } catch (e) {
+                        // 3. Fallback: Clic inyectado por DOM en icono y botón contenedor
+                        await page.evaluate((sel) => {
+                            const el = document.querySelector(sel);
+                            if (el) {
+                                el.click();
+                                el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+
+                                const btnPadre = el.closest('button');
+                                if (btnPadre && btnPadre !== el) {
+                                    btnPadre.click();
+                                    btnPadre.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+                                }
+                            }
+                        }, selectorEncontrado);
+                    }
+                }
+
+                // Esperar a que reaccione la animación de la página
+                await new Promise(r => setTimeout(r, 1200));
+
+                // Confirmar si ya se abrió
+                veredictoAbierto = await page.evaluate((id) => {
+                    const drawer = document.getElementById(id);
+                    return drawer ? drawer.classList.contains("show") : false;
+                }, drawerId);
+
+                if (veredictoAbierto) {
+                    console.log(`✅ Índice abierto con éxito en el intento #${intento}.`);
+                    break;
+                }
+            }
+
+            // ==========================================================
+            // FORZADO SUPREMO (Inyección CSS directa si el click falla)
+            // ==========================================================
+            if (!veredictoAbierto) {
+                console.log("⚠ Los clics convencionales fallaron. Procediendo al forzado inyectando clases directamente...");
+                veredictoAbierto = await page.evaluate((id) => {
+                    const drawer = document.getElementById(id);
+                    if (drawer) {
+                        // Modificamos las clases para hacerlo visible visualmente
+                        drawer.classList.add("show");
+                        drawer.classList.remove("closed");
+                        
+                        // Añadimos ajuste del cuerpo de Moodle (desplaza el contenido principal a la derecha)
+                        document.body.classList.add("drawer-open-left");
+                        
+                        // Sincronizamos accesibilidad
+                        const btn = document.querySelector('[data-target="theme_boost-drawers-courseindex"]');
+                        if (btn) btn.setAttribute("aria-expanded", "true");
+                        
+                        return true;
+                    }
+                    return false;
+                }, drawerId);
+
+                if (veredictoAbierto) {
+                    console.log("🔥 Forzado de clases CSS exitoso. Menú desplegado y visible.");
+                    await new Promise(r => setTimeout(r, 1200));
+                } else {
+                    console.log("❌ Error fatal: El contenedor del índice de Moodle no existe en el DOM.");
+                }
+            }
+        }
     } catch (error) {
-        console.log("⚠ No se pudo abrir el índice:", error.message);
+        console.log("⚠ No se pudo procesar el índice del curso:", error.message);
     }
 
     // BUSCAR Y RESALTAR AL USUARIO EN EL LISTADO
